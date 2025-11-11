@@ -1,3 +1,0 @@
-/home/runner/work/rkdeveloptool/rkdeveloptool/_codeql_build_dir/CMakeFiles/rkDevelopTool_Mac.dir
-/home/runner/work/rkdeveloptool/rkdeveloptool/_codeql_build_dir/CMakeFiles/edit_cache.dir
-/home/runner/work/rkdeveloptool/rkdeveloptool/_codeql_build_dir/CMakeFiles/rebuild_cache.dir
