@@ -64,6 +64,12 @@ void usage()
 	printf("PackBootLoader:\t\tpack\r\n");
 	printf("UnpackBootLoader:\tunpack <boot loader>\r\n");
 	printf("TagSPL:\t\t\ttagspl <tag> <U-Boot SPL>\r\n");
+	printf("\r\n");
+	printf("DeviceSelection:\r\n");
+	printf("  --id <DevNo>\t\tSpecify device by DevNo (1-based), use 'ld' to list\r\n");
+	printf("  --serial <Serial>\tSpecify device by serial number\r\n");
+	printf("\r\n");
+	printf("Note: Use 'ld' command to list all devices and view DevNo/LocationID/Serial\r\n");
 	printf("-------------------------------------------------------\r\n\r\n");
 }
 void ProgressInfoProc(UINT deviceLayer, ENUM_PROGRESS_PROMPT promptID, long long totalValue, long long currentValue, ENUM_CALL_STEP emCall)
@@ -3085,17 +3091,46 @@ void list_device(CRKScan *pScan)
 			strDevType = "Loader";
 		else
 			strDevType = "Unknown";
-		printf("DevNo=%d\tVid=0x%x,Pid=0x%x,LocationID=%x\t%s\r\n",i+1,desc.usVid,
-		       desc.usPid,desc.uiLocationID,strDevType.c_str());
+		printf("DevNo=%d\tVid=0x%x,Pid=0x%x,LocationID=%x\tSerial=%s\t%s\r\n",i+1,desc.usVid,
+		       desc.usPid,desc.uiLocationID,
+		       (desc.szSerialNumber[0] != '\0' ? desc.szSerialNumber : "N/A"),
+		       strDevType.c_str());
 	}
 	
 }
 
-
 bool handle_command(int argc, char* argv[], CRKScan *pScan)
 {
 	string strCmd;
-	strCmd = argv[1];
+	int cmd_idx = 1;
+	int device_id = -1;
+	char* serial_filter = NULL;
+	
+	// Parse --id and --serial options first
+	for (int i = 1; i < argc - 1; i++) {
+		if (strcmp(argv[i], "--id") == 0) {
+			char *pszEnd;
+			device_id = strtol(argv[i + 1], &pszEnd, 10);
+			if (*pszEnd || device_id < 1) {
+				printf("Invalid device ID: %s (must be >= 1)\r\n", argv[i + 1]);
+				return false;
+			}
+			cmd_idx = i + 2;
+			i++; // skip next arg
+		} else if (strcmp(argv[i], "--serial") == 0) {
+			serial_filter = argv[i + 1];
+			cmd_idx = i + 2;
+			i++; // skip next arg
+		}
+	}
+	
+	if (cmd_idx >= argc) {
+		printf("No command specified!\r\n");
+		usage();
+		return false;
+	}
+	
+	strCmd = argv[cmd_idx];
 	ssize_t cnt;
 	bool bRet,bSuccess = false;
 	char *s;
@@ -3120,19 +3155,25 @@ bool handle_command(int argc, char* argv[], CRKScan *pScan)
 		mergeBoot();
 		return true;
 	} else if (strcmp(strCmd.c_str(), "UNPACK") == 0) {//unpack boot loader
-		string strLoader = argv[2];
+		if (cmd_idx + 1 >= argc) {
+			printf("unpack: parameter error\n");
+			usage();
+			return false;
+		}
+		string strLoader = argv[cmd_idx + 1];
 		unpackBoot((char*)strLoader.c_str());
 		return true;
 	} else if (strcmp(strCmd.c_str(), "TAGSPL") == 0) {//tag u-boot spl
-		if (argc == 4) {
-			string tag = argv[2];
-			string spl = argv[3];
+		if (cmd_idx + 2 < argc) {
+			string tag = argv[cmd_idx + 1];
+			string spl = argv[cmd_idx + 2];
 			printf("tag %s to %s\n", tag.c_str(), spl.c_str());
 			tag_spl((char*)tag.c_str(), (char*)spl.c_str());
 			return true;
 		}
 		printf("tagspl: parameter error\n");
 		usage();
+		return false;
 	}
 	cnt = pScan->Search(RKUSB_MASKROM | RKUSB_LOADER);
 	if(strcmp(strCmd.c_str(), "LD") == 0) {
@@ -3140,62 +3181,103 @@ bool handle_command(int argc, char* argv[], CRKScan *pScan)
 		return (cnt>0)?true:false;
 	}
 	
-	if (cnt < 1) {
-		ERROR_COLOR_ATTR;
-		printf("Did not find any rockusb device, please plug device in!");
-		NORMAL_COLOR_ATTR;
-		printf("\r\n");
-		return bSuccess;
-	} else if (cnt > 1) {
-		ERROR_COLOR_ATTR;
-		printf("Found too many rockusb devices, please plug devices out!");
-		NORMAL_COLOR_ATTR;
-		printf("\r\n");
-		return bSuccess;
-	}
-
-	bRet = pScan->GetDevice(dev, 0);
-	if (!bRet) {
-		ERROR_COLOR_ATTR;
-		printf("Getting information about rockusb device failed!");
-		NORMAL_COLOR_ATTR;
-		printf("\r\n");
-		return bSuccess;
-	}
-
-	if(strcmp(strCmd.c_str(), "RD") == 0) {
-		if ((argc != 2) && (argc != 3))
-			printf("Parameter of [RD] command is invalid, please check help!\r\n");
-		else {
-			if (argc == 2)
-				bSuccess = reset_device(dev);
-			else {
-				UINT uiSubCode;
-				char *pszEnd;
-				uiSubCode = strtoul(argv[2], &pszEnd, 0);
-				if (*pszEnd)
-					printf("Subcode is invalid, please check!\r\n");
-				else {
-					if (uiSubCode <= 5)
-						bSuccess = reset_device(dev, uiSubCode);
-					else
-						printf("Subcode is invalid, please check!\r\n");
+	// Device selection logic
+	if (device_id > 0) {
+		// Use specified device ID (1-based)
+		if (device_id > cnt) {
+			ERROR_COLOR_ATTR;
+			printf("Device ID %d not found (only %zd devices available)!", device_id, cnt);
+			NORMAL_COLOR_ATTR;
+			printf("\r\n");
+			printf("Use 'ld' command to list all devices.\r\n");
+			return bSuccess;
+		}
+		if (!pScan->GetDevice(dev, device_id - 1)) {
+			ERROR_COLOR_ATTR;
+			printf("Failed to get device with ID %d!", device_id);
+			NORMAL_COLOR_ATTR;
+			printf("\r\n");
+			return bSuccess;
+		}
+	} else if (serial_filter != NULL) {
+		// Search for device by serial number
+		bool found = false;
+		for (int j = 0; j < cnt; j++) {
+			STRUCT_RKDEVICE_DESC tmp_dev;
+			if (pScan->GetDevice(tmp_dev, j)) {
+				if (strstr(tmp_dev.szSerialNumber, serial_filter) != NULL) {
+					dev = tmp_dev;
+					found = true;
+					break;
 				}
 			}
 		}
-	} else if(strcmp(strCmd.c_str(), "CS") == 0) {
-		if (argc != 3)
-			printf("Parameter of [CS] command is invalid, please check help!\r\n");
-		else {
+		if (!found) {
+			ERROR_COLOR_ATTR;
+			printf("No device found with serial number matching '%s'!", serial_filter);
+			NORMAL_COLOR_ATTR;
+			printf("\r\n");
+			printf("Use 'ld' command to list all devices.\r\n");
+			return bSuccess;
+		}
+	} else {
+		// No device selection specified
+		if (cnt < 1) {
+			ERROR_COLOR_ATTR;
+			printf("Did not find any rockusb device, please plug device in!");
+			NORMAL_COLOR_ATTR;
+			printf("\r\n");
+			return bSuccess;
+		} else if (cnt > 1) {
+			ERROR_COLOR_ATTR;
+			printf("Found multiple (%zd) rockusb devices! Please specify device using --id or --serial option.", cnt);
+			NORMAL_COLOR_ATTR;
+			printf("\r\n");
+			printf("\r\nAvailable devices:\r\n");
+			list_device(pScan);
+			printf("\r\nExample: rkdeveloptool --id 1 <command>\r\n");
+			printf("         rkdeveloptool --serial <serial> <command>\r\n");
+			return bSuccess;
+		}
+		
+		// Only one device, use it
+		if (!pScan->GetDevice(dev, 0)) {
+			ERROR_COLOR_ATTR;
+			printf("Getting information about rockusb device failed!");
+			NORMAL_COLOR_ATTR;
+			printf("\r\n");
+			return bSuccess;
+		}
+	}
+
+	if(strcmp(strCmd.c_str(), "RD") == 0) {
+		if (cmd_idx + 1 < argc) {
 			UINT uiSubCode;
 			char *pszEnd;
-			uiSubCode = strtoul(argv[2], &pszEnd, 0);
+			uiSubCode = strtoul(argv[cmd_idx + 1], &pszEnd, 0);
+			if (*pszEnd)
+				printf("Subcode is invalid, please check!\r\n");
+			else {
+				if (uiSubCode <= 5)
+					bSuccess = reset_device(dev, uiSubCode);
+				else
+					printf("Subcode is invalid, please check!\r\n");
+			}
+		} else {
+			bSuccess = reset_device(dev);
+		}
+	} else if(strcmp(strCmd.c_str(), "CS") == 0) {
+		if (cmd_idx + 1 < argc) {
+			UINT uiSubCode;
+			char *pszEnd;
+			uiSubCode = strtoul(argv[cmd_idx + 1], &pszEnd, 0);
 			if (*pszEnd)
 				printf("Storage is invalid, please check!\r\n");
 			else {
 				bSuccess = change_storage(dev, uiSubCode);
 			}
-		}
+		} else
+			printf("Parameter of [CS] command is invalid, please check help!\r\n");
 	} else if(strcmp(strCmd.c_str(), "TD") == 0) {
 		bSuccess = test_device(dev);
 	} else if (strcmp(strCmd.c_str(), "RID") == 0) {//Read Flash ID
@@ -3207,60 +3289,56 @@ bool handle_command(int argc, char* argv[], CRKScan *pScan)
 	} else if (strcmp(strCmd.c_str(), "RCB") == 0) {//Read Capability
 		bSuccess = read_capability(dev);
 	} else if(strcmp(strCmd.c_str(), "DB") == 0) {
-		if (argc > 2) {
+		if (cmd_idx + 1 < argc) {
 			string strLoader;
-			strLoader = argv[2];
+			strLoader = argv[cmd_idx + 1];
 			bSuccess = download_boot(dev, (char *)strLoader.c_str());
-		} else if (argc == 2) {
+		} else {
 			ret = find_config_item(g_ConfigItemVec, "loader");
 			if (ret == -1)
 				printf("Did not find loader item in config!\r\n");
 			else
 				bSuccess = download_boot(dev, g_ConfigItemVec[ret].szItemValue);
-		} else
-			printf("Parameter of [DB] command is invalid, please check help!\r\n");
+		}
 	} else if(strcmp(strCmd.c_str(), "GPT") == 0) {
-		if (argc > 2) {
+		if (cmd_idx + 1 < argc) {
 			string strParameter;
-			strParameter = argv[2];
+			strParameter = argv[cmd_idx + 1];
 			bSuccess = write_gpt(dev, (char *)strParameter.c_str());
 		} else
 			printf("Parameter of [GPT] command is invalid, please check help!\r\n");
 	} else if(strcmp(strCmd.c_str(), "PRM") == 0) {
-		if (argc > 2) {
+		if (cmd_idx + 1 < argc) {
 			string strParameter;
-			strParameter = argv[2];
+			strParameter = argv[cmd_idx + 1];
 			bSuccess = write_parameter(dev, (char *)strParameter.c_str());
 		} else
 			printf("Parameter of [PRM] command is invalid, please check help!\r\n");
 	} else if(strcmp(strCmd.c_str(), "UL") == 0) {
-		if (argc > 2) {
+		if (cmd_idx + 1 < argc) {
 			string strLoader;
-			strLoader = argv[2];
+			strLoader = argv[cmd_idx + 1];
 			bSuccess = upgrade_loader(dev, (char *)strLoader.c_str());
 		} else
 			printf("Parameter of [UL] command is invalid, please check help!\r\n");
 	} else if(strcmp(strCmd.c_str(), "EF") == 0) {
-		if (argc == 2) {
-			bSuccess = erase_flash(dev);
-		} else
-			printf("Parameter of [EF] command is invalid, please check help!\r\n");
+		bSuccess = erase_flash(dev);
 	} else if(strcmp(strCmd.c_str(), "WL") == 0) {
-		if (argc == 4) {
+		if (cmd_idx + 2 < argc) {
 			UINT uiBegin;
 			char *pszEnd;
-			uiBegin = strtoul(argv[2], &pszEnd, 0);
+			uiBegin = strtoul(argv[cmd_idx + 1], &pszEnd, 0);
 			if (*pszEnd)
 				printf("Begin is invalid, please check!\r\n");
 			else {
-				if (is_sparse_image(argv[3]))
-						bSuccess = write_sparse_lba(dev, (u32)uiBegin, (u32)-1, argv[3]);
+				if (is_sparse_image(argv[cmd_idx + 2]))
+						bSuccess = write_sparse_lba(dev, (u32)uiBegin, (u32)-1, argv[cmd_idx + 2]);
 				else {
 					bSuccess = true;
-					if (is_ubifs_image(argv[3]))
+					if (is_ubifs_image(argv[cmd_idx + 2]))
 						bSuccess = erase_ubi_block(dev, (u32)uiBegin, (u32)-1);
 					if (bSuccess)
-						bSuccess = write_lba(dev, (u32)uiBegin, argv[3]);
+						bSuccess = write_lba(dev, (u32)uiBegin, argv[cmd_idx + 2]);
 					else
 						printf("Failure of Erase for writing ubi image!\r\n");
 				}
@@ -3268,16 +3346,16 @@ bool handle_command(int argc, char* argv[], CRKScan *pScan)
 		} else
 			printf("Parameter of [WL] command is invalid, please check help!\r\n");
 	} else if(strcmp(strCmd.c_str(), "WLX") == 0) {
-		if (argc == 4) {
+		if (cmd_idx + 2 < argc) {
 			bRet = read_gpt(dev, master_gpt);
 			if (bRet) {
-				bRet = get_lba_from_gpt(master_gpt, argv[2], &lba, &lba_end);
+				bRet = get_lba_from_gpt(master_gpt, argv[cmd_idx + 1], &lba, &lba_end);
 				if (bRet) {
-					if (is_sparse_image(argv[3]))
-						bSuccess = write_sparse_lba(dev, (u32)lba, (u32)(lba_end - lba + 1), argv[3]);
+					if (is_sparse_image(argv[cmd_idx + 2]))
+						bSuccess = write_sparse_lba(dev, (u32)lba, (u32)(lba_end - lba + 1), argv[cmd_idx + 2]);
 					else {
 						bSuccess = true;
-						if (is_ubifs_image(argv[3]))
+						if (is_ubifs_image(argv[cmd_idx + 2]))
 						{
 							if (lba_end == 0xFFFFFFFF)
 								bSuccess = erase_ubi_block(dev, (u32)lba, (u32)lba_end);
@@ -3285,31 +3363,31 @@ bool handle_command(int argc, char* argv[], CRKScan *pScan)
 								bSuccess = erase_ubi_block(dev, (u32)lba, (u32)(lba_end - lba + 1));
 						}
 						if (bSuccess)
-							bSuccess = write_lba(dev, (u32)lba, argv[3]);
+							bSuccess = write_lba(dev, (u32)lba, argv[cmd_idx + 2]);
 						else
 							printf("Failure of Erase for writing ubi image!\r\n");
 					}
 				} else
-					printf("No found %s partition\r\n", argv[2]);
+					printf("No found %s partition\r\n", argv[cmd_idx + 1]);
 			} else {
 				bRet = read_param(dev, param_buffer);
 				if (bRet) {
-					bRet = get_lba_from_param(param_buffer+8, argv[2], &part_offset, &part_size);
+					bRet = get_lba_from_param(param_buffer+8, argv[cmd_idx + 1], &part_offset, &part_size);
 					if (bRet) {
-						if (is_sparse_image(argv[3]))
-							bSuccess = write_sparse_lba(dev, part_offset, part_size, argv[3]);
+						if (is_sparse_image(argv[cmd_idx + 2]))
+							bSuccess = write_sparse_lba(dev, part_offset, part_size, argv[cmd_idx + 2]);
 						else {
 
 							bSuccess = true;
-							if (is_ubifs_image(argv[3]))
+							if (is_ubifs_image(argv[cmd_idx + 2]))
 								bSuccess = erase_ubi_block(dev, part_offset, part_size);
 							if (bSuccess)
-								bSuccess = write_lba(dev, part_offset, argv[3]);
+								bSuccess = write_lba(dev, part_offset, argv[cmd_idx + 2]);
 							else
 								printf("Failure of Erase for writing ubi image!\r\n");
 						}
 					} else
-						printf("No found %s partition\r\n", argv[2]);
+						printf("No found %s partition\r\n", argv[cmd_idx + 1]);
 				}
 				else
 					printf("Not found any partition table!\r\n");
@@ -3320,31 +3398,27 @@ bool handle_command(int argc, char* argv[], CRKScan *pScan)
 	} else if (strcmp(strCmd.c_str(), "RL") == 0) {//Read LBA
 		char *pszEnd;
 		UINT uiBegin, uiLen;
-		if (argc != 5)
-			printf("Parameter of [RL] command is invalid, please check help!\r\n");
-		else {
-			uiBegin = strtoul(argv[2], &pszEnd, 0);
+		if (cmd_idx + 3 < argc) {
+			uiBegin = strtoul(argv[cmd_idx + 1], &pszEnd, 0);
 			if (*pszEnd)
 				printf("Begin is invalid, please check!\r\n");
 			else {
-				uiLen = strtoul(argv[3], &pszEnd, 0);
+				uiLen = strtoul(argv[cmd_idx + 2], &pszEnd, 0);
 				if (*pszEnd)
 					printf("Len is invalid, please check!\r\n");
 				else {
-					bSuccess = read_lba(dev, uiBegin, uiLen, argv[4]);
+					bSuccess = read_lba(dev, uiBegin, uiLen, argv[cmd_idx + 3]);
 				}
 			}
-		}
-	} else if(strcmp(strCmd.c_str(), "PPT") == 0) {
-		if (argc == 2) {
-			bSuccess = print_gpt(dev);
-			if (!bSuccess) {
-				bSuccess = print_parameter(dev);
-				if (!bSuccess)
-					printf("Not found any partition table!\r\n");
-			}
 		} else
-			printf("Parameter of [PPT] command is invalid, please check help!\r\n");
+			printf("Parameter of [RL] command is invalid, please check help!\r\n");
+	} else if(strcmp(strCmd.c_str(), "PPT") == 0) {
+		bSuccess = print_gpt(dev);
+		if (!bSuccess) {
+			bSuccess = print_parameter(dev);
+			if (!bSuccess)
+				printf("Not found any partition table!\r\n");
+		}
 	} else {
 		printf("command is invalid!\r\n");
 		usage();
