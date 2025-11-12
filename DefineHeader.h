@@ -128,6 +128,7 @@ typedef struct _STRUCT_RKDEVICE_DESC{
 	ENUM_RKUSB_TYPE emUsbType;
 	ENUM_RKDEVICE_TYPE emDeviceType;
 	void   *pUsbHandle;
+	char szSerialNumber[64];
 } STRUCT_RKDEVICE_DESC, *PSTRUCT_RKDEVICE_DESC;
 typedef	struct {
 	DWORD	dwTag;

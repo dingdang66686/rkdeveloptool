@@ -230,6 +230,7 @@ void CRKScan::EnumerateUsbDevice(RKDEVICE_DESC_SET &list, UINT &uiTotalMatchDevi
 	STRUCT_RKDEVICE_DESC desc;
 	struct libusb_device_descriptor descriptor;
 	int ret,i,cnt;
+	libusb_device_handle *handle;
 
 	uiTotalMatchDevices = 0;
 	libusb_device **pDevs = NULL;
@@ -260,6 +261,23 @@ void CRKScan::EnumerateUsbDevice(RKDEVICE_DESC_SET &list, UINT &uiTotalMatchDevi
 			desc.uiLocationID = libusb_get_bus_number(dev);
 			desc.uiLocationID <<= 8;
 			desc.uiLocationID += libusb_get_port_number(dev);
+			
+			// Read serial number
+			memset(desc.szSerialNumber, 0, sizeof(desc.szSerialNumber));
+			if (descriptor.iSerialNumber > 0) {
+				ret = libusb_open(dev, &handle);
+				if (ret == 0) {
+					ret = libusb_get_string_descriptor_ascii(handle, descriptor.iSerialNumber,
+						(unsigned char*)desc.szSerialNumber, sizeof(desc.szSerialNumber) - 1);
+					libusb_close(handle);
+					if (ret < 0) {
+						strcpy(desc.szSerialNumber, "");
+					}
+				} else {
+					strcpy(desc.szSerialNumber, "");
+				}
+			}
+			
 			libusb_ref_device(dev);
 			uiTotalMatchDevices++;
 			list.push_back(desc);
@@ -545,6 +563,8 @@ bool CRKScan::Wait(STRUCT_RKDEVICE_DESC &device, ENUM_RKUSB_TYPE usbType, USHORT
 			device.pUsbHandle= (*iter).pUsbHandle;
 			device.emUsbType = usbType;
 			device.usbcdUsb = (*iter).usbcdUsb;
+			strncpy(device.szSerialNumber, (*iter).szSerialNumber, sizeof(device.szSerialNumber) - 1);
+			device.szSerialNumber[sizeof(device.szSerialNumber) - 1] = '\0';
 			libusb_ref_device((libusb_device *)device.pUsbHandle);
 
 			if (usbType == RKUSB_MSC) {
@@ -595,6 +615,8 @@ bool CRKScan::GetDevice(STRUCT_RKDEVICE_DESC &device, int pos)
 	device.uiLocationID = (*iter).uiLocationID;
 	device.pUsbHandle= (*iter).pUsbHandle;
 	device.usbcdUsb = (*iter).usbcdUsb;
+	strncpy(device.szSerialNumber, (*iter).szSerialNumber, sizeof(device.szSerialNumber) - 1);
+	device.szSerialNumber[sizeof(device.szSerialNumber) - 1] = '\0';
 	return true;
 }
 
